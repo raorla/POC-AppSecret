@@ -1,9 +1,0 @@
-{
-  "chain": {
-    "id": "421614",
-    "hub": "0x3eca1B216A7DF1C7689aEb259fFB83ADFB894E7f",
-    "sms": "https://sms.arbitrum-sepolia-testnet.iex.ec",
-    "resultProxy": "https://result.arbitrum-sepolia-testnet.iex.ec",
-    "iexecGateway": "https://api.arbitrum-sepolia-testnet.iex.ec"
-  }
-}

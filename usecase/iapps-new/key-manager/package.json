@@ -1,8 +1,0 @@
-{
-  "name": "@privateai/key-manager",
-  "version": "1.0.0",
-  "description": "KeyManager iApp - Secure session key management in TEE",
-  "main": "src/app.js",
-  "type": "module",
-  "dependencies": {}
-}
