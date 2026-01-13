@@ -1,6 +1,8 @@
 node_modules/
 .env
 *.log
+OLD/
+usecase/
 output/*
 !output/.gitkeep
 cache/*

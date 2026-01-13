@@ -19,7 +19,10 @@ import { join } from 'path';
 
 // Environment variables provided by iExec TEE
 const IEXEC_OUT = process.env.IEXEC_OUT || './output';
+// Update to check for App Secret first, then fallback to Requester Secret
+const APP_DEVELOPER_SECRET = process.env.IEXEC_APP_DEVELOPER_SECRET;
 const REQUESTER_SECRET_1 = process.env.IEXEC_REQUESTER_SECRET_1;
+const SECRET_TO_USE = APP_DEVELOPER_SECRET || REQUESTER_SECRET_1;
 
 /**
  * Validate that a secret exists and has the expected format
@@ -96,10 +99,10 @@ function validateSecret(secret) {
 function simulateApiCall(secret) {
     // In a real scenario, this would make an actual API call
     // Here we simulate a successful authentication
-    
+
     const timestamp = new Date().toISOString();
     const requestId = randomBytes(8).toString('hex');
-    
+
     return {
         success: true,
         message: 'API authentication successful (simulated)',
@@ -123,11 +126,11 @@ function encryptWithSecret(secret, message) {
     // Derive a 32-byte key from the secret
     const key = createHash('sha256').update(secret).digest();
     const iv = randomBytes(16);
-    
+
     const cipher = createCipheriv('aes-256-cbc', key, iv);
     let encrypted = cipher.update(message, 'utf8', 'base64');
     encrypted += cipher.final('base64');
-    
+
     return {
         algorithm: 'aes-256-cbc',
         iv: iv.toString('base64'),
@@ -144,7 +147,7 @@ function encryptWithSecret(secret, message) {
 function hashSecret(secret) {
     const sha256 = createHash('sha256').update(secret).digest('hex');
     const sha512 = createHash('sha512').update(secret).digest('hex');
-    
+
     return {
         sha256,
         sha512: sha512.substring(0, 64) + '...',
@@ -159,13 +162,13 @@ function hashSecret(secret) {
  */
 function parseArgs(args) {
     const argString = args.join(' ').trim();
-    
+
     if (!argString) {
         return { action: 'info' };
     }
-    
+
     const parts = argString.split(',').map(p => p.trim());
-    
+
     return {
         action: parts[0] || 'info',
         params: parts.slice(1)
@@ -180,90 +183,89 @@ async function main() {
     console.log('=======================');
     console.log('Running inside iExec TEE environment');
     console.log('');
-    
+
     // Check if secret is available
     console.log('🔍 Checking for requester secret...');
-    
-    if (!REQUESTER_SECRET_1) {
-        console.log('❌ No secret found in IEXEC_REQUESTER_SECRET_1');
+
+    if (!SECRET_TO_USE) {
+        console.log('❌ No secret found in IEXEC_APP_DEVELOPER_SECRET or IEXEC_REQUESTER_SECRET_1');
         console.log('');
-        console.log('📌 To use this iApp, you need to:');
-        console.log('   1. Push the secret to SMS using iExec CLI:');
-        console.log('      iexec secrets push-requester-secret "my-secret" "your-secret-value"');
+        console.log('📌 To use this iApp, you need either:');
+        console.log('   A. An App Secret (pushed by App Owner)');
+        console.log('   B. A Requester Secret (pushed by User)');
         console.log('');
-        console.log('   2. Run this iApp with the secret:');
-        console.log('      iapp run <address> --requesterSecret 1=my-secret');
-        
+
         // Write error output
         const output = {
             success: false,
             error: 'No secret provided',
-            instructions: 'Push a secret to SMS first, then run with --requesterSecret 1=secretName'
+            instructions: 'Ensure App Owner pushed App Secret OR provide a requester secret.'
         };
-        
+
         if (!existsSync(IEXEC_OUT)) {
             mkdirSync(IEXEC_OUT, { recursive: true });
         }
-        
+
         const resultPath = join(IEXEC_OUT, 'result.json');
         writeFileSync(resultPath, JSON.stringify(output, null, 2));
-        
+
         const computedPath = join(IEXEC_OUT, 'computed.json');
         writeFileSync(computedPath, JSON.stringify({ 'deterministic-output-path': resultPath }));
-        
+
         return;
     }
-    
+
     console.log('✅ Secret found!');
-    console.log(`   Length: ${REQUESTER_SECRET_1.length} characters`);
-    console.log(`   Preview: ${REQUESTER_SECRET_1.substring(0, 8)}...`);
+    console.log(`   Length: ${SECRET_TO_USE.length} characters`);
+    console.log(`   Preview: ${SECRET_TO_USE.substring(0, 8)}...`);
     console.log('');
-    
+
     // Parse arguments
     const args = process.argv.slice(2);
     const { action, params } = parseArgs(args);
-    
+
     console.log(`📋 Action requested: ${action}`);
     console.log('');
-    
+
     let result = {};
-    
+
     switch (action.toLowerCase()) {
         case 'validate':
             console.log('🔍 Validating secret...');
             result = {
                 action: 'validate',
-                validation: validateSecret(REQUESTER_SECRET_1)
+                validation: validateSecret(SECRET_TO_USE)
             };
             break;
-            
+
         case 'use-api':
         case 'api':
             console.log('🌐 Simulating API call with secret...');
             result = {
                 action: 'use-api',
-                validation: validateSecret(REQUESTER_SECRET_1),
-                apiResponse: simulateApiCall(REQUESTER_SECRET_1)
+                validation: validateSecret(SECRET_TO_USE),
+                apiResponse: simulateApiCall(SECRET_TO_USE)
             };
             break;
-            
+
         case 'encrypt':
             const message = params[0] || 'Hello from iExec TEE!';
             console.log(`🔒 Encrypting message: "${message}"`);
             result = {
                 action: 'encrypt',
-                encrypted: encryptWithSecret(REQUESTER_SECRET_1, message)
+                encrypted: encryptWithSecret(SECRET_TO_USE, message)
             };
             break;
-            
+
         case 'hash':
             console.log('🔢 Hashing secret...');
             result = {
                 action: 'hash',
-                hashes: hashSecret(REQUESTER_SECRET_1)
+                preview: SECRET_TO_USE.substring(0, 8) + '...',
+                hashes: hashSecret(SECRET_TO_USE)
             };
             break;
-            
+
         case 'info':
         default:
             console.log('ℹ️  Getting secret information...');
@@ -271,41 +273,41 @@ async function main() {
                 action: 'info',
                 secretInfo: {
                     available: true,
-                    length: REQUESTER_SECRET_1.length,
-                    preview: REQUESTER_SECRET_1.substring(0, 8) + '...',
-                    validation: validateSecret(REQUESTER_SECRET_1)
+                    length: SECRET_TO_USE.length,
+                    preview: SECRET_TO_USE.substring(0, 8) + '...',
+                    validation: validateSecret(SECRET_TO_USE)
                 },
                 availableActions: ['validate', 'use-api', 'encrypt', 'hash', 'info']
             };
             break;
     }
-    
+
     // Add metadata
     const output = {
         success: true,
         timestamp: new Date().toISOString(),
         ...result
     };
-    
+
     console.log('');
     console.log('✅ Action completed successfully!');
-    
+
     // Ensure output directory exists
     if (!existsSync(IEXEC_OUT)) {
         mkdirSync(IEXEC_OUT, { recursive: true });
     }
-    
+
     // Write the result
     const resultPath = join(IEXEC_OUT, 'result.json');
     writeFileSync(resultPath, JSON.stringify(output, null, 2));
-    
+
     // Write computed.json for iExec
     const computedPath = join(IEXEC_OUT, 'computed.json');
     const computedData = {
         'deterministic-output-path': resultPath
     };
     writeFileSync(computedPath, JSON.stringify(computedData));
-    
+
     console.log('📁 Output written to:', resultPath);
     console.log('');
     console.log('🎉 Secret consumption complete!');

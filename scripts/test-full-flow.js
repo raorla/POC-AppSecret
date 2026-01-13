@@ -1,398 +1,384 @@
 #!/usr/bin/env node
 /**
- * Test complet du flux de secrets de bout en bout
+ * Full Secret Flow Test (APP SECRET MODE) - SIMPLIFIED
  * 
- * Ce script:
- * 1. Exécute TargetApp (avec wallet principal) pour générer un secret et le pousser vers SMS
- * 2. Exécute ConsumeApp (avec wallet dédié) pour utiliser le secret
- * 3. Compare les hash pour vérifier que tout fonctionne
+ * This script:
+ * 1. Uses the Main Wallet (Owner) for all operations.
+ * 2. Generates AppOrders locally (no need to publish on the marketplace).
+ * 3. Runs TargetApp to push the secret.
+ * 4. Runs ConsumeApp to read the secret.
  */
 
 import { IExec, utils } from 'iexec';
 import { config } from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import { Buffer } from 'buffer';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Charger .env
+// Load .env
 config({ path: join(__dirname, '..', '.env') });
 
-// Couleurs console
+// Console colors
 const c = {
-  green: '\x1b[32m',
-  red: '\x1b[31m',
-  yellow: '\x1b[33m',
-  cyan: '\x1b[36m',
-  magenta: '\x1b[35m',
-  reset: '\x1b[0m',
-  bold: '\x1b[1m'
+    green: '\x1b[32m',
+    red: '\x1b[31m',
+    yellow: '\x1b[33m',
+    cyan: '\x1b[36m',
+    magenta: '\x1b[35m',
+    reset: '\x1b[0m',
+    bold: '\x1b[1m'
 };
 
 function log(color, ...args) {
-  console.log(color, ...args, c.reset);
+    console.log(color, ...args, c.reset);
 }
 
 // Configuration
 const CONFIG = {
-  chainId: 421614,
-  rpcUrl: 'https://sepolia-rollup.arbitrum.io/rpc',
-  smsUrl: 'https://sms.arbitrum-sepolia-testnet.iex.ec',
-  targetApp: process.env.TARGET_APP_ADDRESS || '0xf387db543a0dfc832d80c56a280245b229c50eb5',
-  consumeApp: process.env.CONSUME_APP_ADDRESS || '0x20c81761Bf9d84F158F4A505F666c6C5474Ed37d',
-  workerpool: process.env.WORKERPOOL_ADDRESS || '0xB967057a21dc6A66A29721d96b8Aa7454B7c383F',
-  // Wallet dédié (celui qui pousse et récupère les secrets)
-  dedicatedPrivateKey: process.env.DEDICATED_PRIVATE_KEY ,
-  // Wallet principal (celui qui a déployé les apps)
-  mainPrivateKey: process.env.WALLET_PRIVATE_KEY
+    chainId: 421614,
+    rpcUrl: process.env.RPC_URL || 'https://sepolia-rollup.arbitrum.io/rpc',
+    smsUrl: process.env.SMS_URL || 'https://sms.arbitrum-sepolia-testnet.iex.ec',
+    targetApp: process.env.TARGET_APP_ADDRESS,
+    consumeApp: process.env.CONSUME_APP_ADDRESS,
+    workerpool: process.env.WORKERPOOL_ADDRESS || '0xB967057a21dc6A66A29721d96b8Aa7454B7c383F',
+    // Wallet ONLY (Owner of both apps)
+    privateKey: process.env.WALLET_PRIVATE_KEY
 };
 
 async function waitForTask(iexec, taskId) {
-  log(c.yellow, `   ⏳ Attente de la tâche ${taskId.substring(0, 10)}...`);
-  
-  // Attendre un peu que la tâche soit créée
-  await new Promise(resolve => setTimeout(resolve, 5000));
-  
-  const taskObservable = await iexec.task.obsTask(taskId);
-  
-  return new Promise((resolve, reject) => {
-    taskObservable.subscribe({
-      next: ({ message, task }) => {
-        log(c.cyan, `      📊 ${message}`);
-        if (task && task.statusName === 'COMPLETED') {
-          resolve(task);
-        } else if (task && task.statusName === 'FAILED') {
-          reject(new Error('Task failed'));
-        }
-      },
-      error: reject,
-      complete: () => resolve()
+    log(c.yellow, `   ⏳ Waiting for task ${taskId.substring(0, 10)}... (This may take 1-2 min)`);
+
+    // Wait a bit for the task to be accessible
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    const taskObservable = await iexec.task.obsTask(taskId);
+
+    return new Promise((resolve, reject) => {
+        taskObservable.subscribe({
+            next: ({ message, task }) => {
+                // Filter logs to avoid spamming
+                if (['TASK_COMPLETED', 'TASK_FAILED', 'TASK_TIMEDOUT'].includes(task?.statusName) || !task) {
+                    log(c.cyan, `      📊 ${message}`);
+                }
+
+                if (task && task.statusName === 'COMPLETED') {
+                    resolve(task);
+                } else if (task && (task.statusName === 'FAILED' || task.statusName === 'TIMEDOUT')) {
+                    reject(new Error(`Task ended with status ${task.statusName}`));
+                }
+            },
+            error: (e) => {
+                // Ignore temporary polling errors
+                if (e && e.message && !e.message.includes('Task not found')) {
+                    console.log('      (polling warn: ' + e.message + ')');
+                }
+            },
+            complete: () => resolve()
+        });
     });
-  });
 }
 
-async function executeTargetApp(iexec, secretName) {
-  log(c.bold + c.magenta, '═══════════════════════════════════════════════════════════════');
-  log(c.bold + c.magenta, '    📦 ÉTAPE 1: Exécution de TargetApp');
-  log(c.bold + c.magenta, '═══════════════════════════════════════════════════════════════');
-  console.log('');
+async function fetchWorkerpoolOrder(iexec) {
+    const { orders } = await iexec.orderbook.fetchWorkerpoolOrderbook({
+        workerpool: CONFIG.workerpool,
+        category: 0,
+        minTag: 'tee,scone'
+    });
 
-  // Récupérer l'app order
-  const { orders: appOrders } = await iexec.orderbook.fetchAppOrderbook(CONFIG.targetApp, {
-    workerpool: CONFIG.workerpool,
-    minTag: 'tee,scone'
-  });
-  
-  if (!appOrders || appOrders.length === 0) {
-    throw new Error('Aucun app order disponible pour TargetApp');
-  }
-  
-  const appOrder = appOrders[0].order;
-  log(c.green, '   ✅ App order trouvé');
-
-  // Récupérer le workerpool order TEE
-  const { orders: workerpoolOrders } = await iexec.orderbook.fetchWorkerpoolOrderbook({
-    workerpool: CONFIG.workerpool,
-    category: 0,
-    minTag: 'tee,scone'
-  });
-  
-  if (!workerpoolOrders || workerpoolOrders.length === 0) {
-    throw new Error('Aucun workerpool order TEE disponible');
-  }
-  
-  const workerpoolOrder = workerpoolOrders[0].order;
-  log(c.green, '   ✅ Workerpool order TEE trouvé');
-
-  // Créer le request order
-  const requestOrderTemplate = await iexec.order.createRequestorder({
-    app: CONFIG.targetApp,
-    category: 0,
-    tag: 'tee,scone',
-    workerpoolmaxprice: 100000000,
-    params: {
-      iexec_args: `${secretName},api-key`
+    if (!orders || orders.length === 0) {
+        throw new Error('No TEE workerpool order available');
     }
-  });
-  
-  const requestOrder = await iexec.order.signRequestorder(requestOrderTemplate);
-  log(c.green, '   ✅ Request order signé');
-
-  // Exécuter
-  log(c.cyan, '   🚀 Lancement de l\'exécution...');
-  const { dealid } = await iexec.order.matchOrders({
-    apporder: appOrder,
-    workerpoolorder: workerpoolOrder,
-    requestorder: requestOrder
-  });
-  
-  log(c.green, `   ✅ Deal créé: ${dealid}`);
-
-  // Attendre le résultat
-  const deal = await iexec.deal.show(dealid);
-  const taskId = deal.tasks['0'];
-  
-  await waitForTask(iexec, taskId);
-  
-  const taskResult = await iexec.task.show(taskId);
-  log(c.green, '   ✅ TargetApp terminé!');
-  
-  return {
-    dealId: dealid,
-    taskId,
-    resultLocation: taskResult.results?.location
-  };
+    return orders[0].order;
 }
 
-async function executeConsumeApp(iexec, secretName) {
-  log(c.bold + c.magenta, '═══════════════════════════════════════════════════════════════');
-  log(c.bold + c.magenta, '    📱 ÉTAPE 2: Exécution de ConsumeApp (wallet dédié)');
-  log(c.bold + c.magenta, '═══════════════════════════════════════════════════════════════');
-  console.log('');
+// Generates an App Order on the fly
+async function createAppOrder(iexec, appAddress) {
+    const appOrderTemplate = await iexec.order.createApporder({
+        app: appAddress,
+        appprice: 0,
+        volume: 1,
+        tag: 'tee,scone'
+    });
+    return await iexec.order.signApporder(appOrderTemplate);
+}
 
-  // Vérifier que le secret existe
-  const address = await iexec.wallet.getAddress();
-  const secretExists = await iexec.secrets.checkRequesterSecretExists(address, secretName);
-  
-  if (!secretExists) {
-    throw new Error(`Secret "${secretName}" non trouvé pour ${address}`);
-  }
-  
-  log(c.green, `   ✅ Secret "${secretName}" trouvé!`);
+// Configures permissions for TargetApp (gives it the Owner key)
+async function setupTargetAppPermissions(iexec) {
+    log(c.bold + c.magenta, '═══════════════════════════════════════════════════════════════');
+    log(c.bold + c.magenta, '    🔧 STEP 0: TargetApp Permissions Setup');
+    log(c.bold + c.magenta, '═══════════════════════════════════════════════════════════════');
+    console.log('');
 
-  // Récupérer l'app order
-  const { orders: appOrders } = await iexec.orderbook.fetchAppOrderbook(CONFIG.consumeApp, {
-    workerpool: CONFIG.workerpool,
-    minTag: 'tee,scone'
-  });
-  
-  if (!appOrders || appOrders.length === 0) {
-    throw new Error('Aucun app order disponible pour ConsumeApp');
-  }
-  
-  const appOrder = appOrders[0].order;
-  log(c.green, '   ✅ App order trouvé');
+    const secretValue = JSON.stringify({
+        DEDICATED_PRIVATE_KEY: CONFIG.privateKey,
+        SMS_URL: CONFIG.smsUrl,
+        RPC_URL: CONFIG.rpcUrl
+    });
 
-  // Récupérer le workerpool order TEE
-  const { orders: workerpoolOrders } = await iexec.orderbook.fetchWorkerpoolOrderbook({
-    workerpool: CONFIG.workerpool,
-    category: 0,
-    minTag: 'tee,scone'
-  });
-  
-  if (!workerpoolOrders || workerpoolOrders.length === 0) {
-    throw new Error('Aucun workerpool order TEE disponible');
-  }
-  
-  const workerpoolOrder = workerpoolOrders[0].order;
-  log(c.green, '   ✅ Workerpool order TEE trouvé');
-
-  // Créer le request order avec le secret
-  const requestOrderTemplate = await iexec.order.createRequestorder({
-    app: CONFIG.consumeApp,
-    category: 0,
-    tag: 'tee,scone',
-    workerpoolmaxprice: 100000000,
-    params: {
-      iexec_args: 'hash',
-      iexec_secrets: {
-        '1': secretName
-      }
+    log(c.yellow, '   ⚙️  Updating TargetApp configuration secret...');
+    try {
+        // Check if secret allows overwrite (standard behavior for SMS)
+        // We force a push to ensure the app has the latest credentials
+        const isPushed = await iexec.app.pushAppSecret(CONFIG.targetApp, secretValue);
+        if (isPushed) {
+            log(c.green, '   ✅ Configuration secret updated (TargetApp will have Owner rights)');
+        } else {
+            throw new Error("Push returned false");
+        }
+    } catch (error) {
+        if (error.message && error.message.includes('already exists')) {
+            log(c.yellow, '   ⚠️  Secret already exists. Assuming it is correct.');
+            log(c.yellow, '       (If TargetApp test fails, redeploy TargetApp to reset the secret)');
+        } else {
+            log(c.red, `   ❌ Error during permission setup: ${error.message}`);
+            throw error;
+        }
     }
-  });
-  
-  const requestOrder = await iexec.order.signRequestorder(requestOrderTemplate);
-  log(c.green, '   ✅ Request order signé');
+}
 
-  // Exécuter
-  log(c.cyan, '   🚀 Lancement de l\'exécution...');
-  const { dealid } = await iexec.order.matchOrders({
-    apporder: appOrder,
-    workerpoolorder: workerpoolOrder,
-    requestorder: requestOrder
-  });
-  
-  log(c.green, `   ✅ Deal créé: ${dealid}`);
+async function executeTargetApp(iexec, consumeAppAddress, secretName) {
+    log(c.bold + c.magenta, '═══════════════════════════════════════════════════════════════');
+    log(c.bold + c.magenta, '    📦 STEP 1: Running TargetApp');
+    log(c.bold + c.magenta, '═══════════════════════════════════════════════════════════════');
+    console.log('');
+    log(c.magenta, `   🎯 Target: Push secret to ${consumeAppAddress}`);
 
-  // Attendre le résultat
-  const deal = await iexec.deal.show(dealid);
-  const taskId = deal.tasks['0'];
-  
-  await waitForTask(iexec, taskId);
-  
-  const taskResult = await iexec.task.show(taskId);
-  log(c.green, '   ✅ ConsumeApp terminé!');
-  
-  return {
-    dealId: dealid,
-    taskId,
-    resultLocation: taskResult.results?.location
-  };
+    // 1. Create App Order locally
+    const appOrder = await createAppOrder(iexec, CONFIG.targetApp);
+    log(c.green, '   ✅ App order signed (local)');
+
+    // 2. Fetch Workerpool Order
+    const workerpoolOrder = await fetchWorkerpoolOrder(iexec);
+    log(c.green, '   ✅ Workerpool order fetched');
+
+    // 3. Create Request Order
+    const args = `${consumeAppAddress},${secretName},api-key`;
+    log(c.magenta, `   📝 Args: "${args}"`);
+
+    const requestOrderTemplate = await iexec.order.createRequestorder({
+        app: CONFIG.targetApp,
+        category: 0,
+        tag: 'tee,scone',
+        workerpoolmaxprice: 100000000,
+        params: {
+            iexec_args: args
+        }
+    });
+
+    const requestOrder = await iexec.order.signRequestorder(requestOrderTemplate);
+    log(c.green, '   ✅ Request order signed');
+
+    // 4. Match
+    log(c.cyan, '   🚀 Starting execution (Match Orders)...');
+    const { dealid } = await iexec.order.matchOrders({
+        apporder: appOrder,
+        workerpoolorder: workerpoolOrder,
+        requestorder: requestOrder
+    });
+
+    log(c.green, `   ✅ Deal created: ${dealid}`);
+
+    // 5. Wait
+    const deal = await iexec.deal.show(dealid);
+    const taskId = deal.tasks['0'];
+
+    await waitForTask(iexec, taskId);
+
+    const taskResult = await iexec.task.show(taskId);
+    log(c.green, '   ✅ TargetApp finished!');
+
+    return {
+        dealId: dealid,
+        taskId,
+        resultLocation: taskResult.results?.location
+    };
+}
+
+async function executeConsumeApp(iexec) {
+    log(c.bold + c.magenta, '═══════════════════════════════════════════════════════════════');
+    log(c.bold + c.magenta, '    📱 STEP 2: Running ConsumeApp');
+    log(c.bold + c.magenta, '═══════════════════════════════════════════════════════════════');
+    console.log('');
+    log(c.magenta, `   🔐 Secret Source: App Secret (Global)`);
+
+    // 1. Create App Order locally
+    const appOrder = await createAppOrder(iexec, CONFIG.consumeApp);
+    log(c.green, '   ✅ App order signed (local)');
+
+    // 2. Fetch Workerpool Order
+    const workerpoolOrder = await fetchWorkerpoolOrder(iexec);
+    log(c.green, '   ✅ Workerpool order fetched');
+
+    // 3. Create Request Order
+    const requestOrderTemplate = await iexec.order.createRequestorder({
+        app: CONFIG.consumeApp,
+        category: 0,
+        tag: 'tee,scone',
+        workerpoolmaxprice: 100000000,
+        params: {
+            iexec_args: 'hash' // Request hash to verify
+        }
+    });
+
+    const requestOrder = await iexec.order.signRequestorder(requestOrderTemplate);
+    log(c.green, '   ✅ Request order signed');
+
+    // 4. Match
+    log(c.cyan, '   🚀 Starting execution...');
+    const { dealid } = await iexec.order.matchOrders({
+        apporder: appOrder,
+        workerpoolorder: workerpoolOrder,
+        requestorder: requestOrder
+    });
+
+    log(c.green, `   ✅ Deal created: ${dealid}`);
+
+    // 5. Wait
+    const deal = await iexec.deal.show(dealid);
+    const taskId = deal.tasks['0'];
+
+    await waitForTask(iexec, taskId);
+
+    const taskResult = await iexec.task.show(taskId);
+    log(c.green, '   ✅ ConsumeApp finished!');
+
+    return {
+        dealId: dealid,
+        taskId,
+        resultLocation: taskResult.results?.location
+    };
 }
 
 async function fetchResult(location) {
-  const ipfsUrl = `https://ipfs-gateway.arbitrum-sepolia-testnet.iex.ec${location}`;
-  
-  try {
-    const response = await fetch(ipfsUrl);
-    const buffer = await response.arrayBuffer();
-    
-    // Le résultat est un ZIP, on doit extraire result.json
-    const { execSync } = await import('child_process');
-    const fs = await import('fs');
-    
-    const tempZip = '/tmp/result-temp.zip';
-    const tempDir = '/tmp/result-temp';
-    
-    fs.writeFileSync(tempZip, Buffer.from(buffer));
-    execSync(`rm -rf ${tempDir} && unzip -o ${tempZip} -d ${tempDir}`, { stdio: 'pipe' });
-    
-    const resultJson = fs.readFileSync(`${tempDir}/result.json`, 'utf8');
-    return JSON.parse(resultJson);
-  } catch (error) {
-    console.error('Erreur lors de la récupération du résultat:', error.message);
-    return null;
-  }
+    const ipfsUrl = `https://ipfs-gateway.arbitrum-sepolia-testnet.iex.ec${location}`;
+
+    try {
+        const response = await fetch(ipfsUrl);
+        const buffer = await response.arrayBuffer();
+
+        // The result is a ZIP, we must extract result.json
+        const { execSync } = await import('child_process');
+        const fs = await import('fs');
+
+        const tempZip = `/tmp/result-${Date.now()}.zip`;
+        const tempDir = `/tmp/result-${Date.now()}`;
+
+        fs.writeFileSync(tempZip, Buffer.from(buffer));
+        execSync(`mkdir -p ${tempDir} && unzip -o ${tempZip} -d ${tempDir}`, { stdio: 'pipe' });
+
+        const resultJson = fs.readFileSync(`${tempDir}/result.json`, 'utf8');
+
+        // Cleanup
+        fs.rmSync(tempZip);
+        fs.rmSync(tempDir, { recursive: true, force: true });
+
+        return JSON.parse(resultJson);
+    } catch (error) {
+        console.error('Error fetching result:', error.message);
+        return null;
+    }
 }
 
 async function main() {
-  console.log('');
-  log(c.bold + c.cyan, '═══════════════════════════════════════════════════════════════');
-  log(c.bold + c.cyan, '    🚀 TEST COMPLET DU FLUX DE SECRETS - ARBITRUM SEPOLIA');
-  log(c.bold + c.cyan, '═══════════════════════════════════════════════════════════════');
-  console.log('');
-
-  // Nom unique pour ce test
-  const secretName = `full-test-${Date.now()}`;
-  log(c.cyan, `📋 Secret Name: ${secretName}`);
-  console.log('');
-
-  // ═══════════════════════════════════════════════════════════════
-  // Initialiser iExec avec le wallet principal pour TargetApp
-  // ═══════════════════════════════════════════════════════════════
-  log(c.yellow, '🔧 Initialisation du wallet principal (pour TargetApp)...');
-  
-  const mainEthProvider = utils.getSignerFromPrivateKey(CONFIG.rpcUrl, CONFIG.mainPrivateKey);
-  const iexecMain = new IExec(
-    { ethProvider: mainEthProvider },
-    {
-      chainId: CONFIG.chainId,
-      smsURL: CONFIG.smsUrl,
-      resultProxyURL: 'https://ipfs-upload.arbitrum-sepolia-testnet.iex.ec',
-      iexecGatewayURL: 'https://api-market.arbitrum-sepolia-testnet.iex.ec'
-    }
-  );
-  
-  const mainAddress = await iexecMain.wallet.getAddress();
-  log(c.green, `   ✅ Wallet principal: ${mainAddress}`);
-  console.log('');
-
-  // ═══════════════════════════════════════════════════════════════
-  // Initialiser iExec avec le wallet dédié pour ConsumeApp
-  // ═══════════════════════════════════════════════════════════════
-  log(c.yellow, '🔧 Initialisation du wallet dédié (pour ConsumeApp)...');
-  
-  const dedicatedEthProvider = utils.getSignerFromPrivateKey(CONFIG.rpcUrl, CONFIG.dedicatedPrivateKey);
-  const iexecDedicated = new IExec(
-    { ethProvider: dedicatedEthProvider },
-    {
-      chainId: CONFIG.chainId,
-      smsURL: CONFIG.smsUrl,
-      resultProxyURL: 'https://ipfs-upload.arbitrum-sepolia-testnet.iex.ec',
-      iexecGatewayURL: 'https://api-market.arbitrum-sepolia-testnet.iex.ec'
-    }
-  );
-  
-  const dedicatedAddress = await iexecDedicated.wallet.getAddress();
-  log(c.green, `   ✅ Wallet dédié: ${dedicatedAddress}`);
-  console.log('');
-
-  // Vérifier les balances
-  log(c.yellow, '💰 Vérification des balances...');
-  const mainBalance = await iexecMain.account.checkBalance(mainAddress);
-  const dedicatedBalance = await iexecDedicated.account.checkBalance(dedicatedAddress);
-  console.log(`   Wallet principal: ${mainBalance.stake} nRLC (stake)`);
-  console.log(`   Wallet dédié: ${dedicatedBalance.stake} nRLC (stake)`);
-  console.log('');
-
-  let targetAppHash, consumeAppHash;
-
-  // ═══════════════════════════════════════════════════════════════
-  // ÉTAPE 1: Exécuter TargetApp
-  // ═══════════════════════════════════════════════════════════════
-  try {
-    const targetResult = await executeTargetApp(iexecMain, secretName);
     console.log('');
-    log(c.cyan, `   📁 Résultat: ${targetResult.resultLocation}`);
-    
-    // Récupérer le hash du résultat
-    const targetData = await fetchResult(targetResult.resultLocation);
-    if (targetData) {
-      targetAppHash = targetData.secretInfo?.hash;
-      log(c.green, `   🔢 Hash TargetApp: ${targetAppHash}`);
-    }
-  } catch (error) {
-    log(c.red, `❌ Erreur TargetApp: ${error.message}`);
-    process.exit(1);
-  }
-
-  console.log('');
-
-  // ═══════════════════════════════════════════════════════════════
-  // ÉTAPE 2: Exécuter ConsumeApp avec le wallet dédié
-  // ═══════════════════════════════════════════════════════════════
-  try {
-    const consumeResult = await executeConsumeApp(iexecDedicated, secretName);
+    log(c.bold + c.cyan, '═══════════════════════════════════════════════════════════════');
+    log(c.bold + c.cyan, '    🚀 APP SECRET FLOW TEST - SINGLE WALLET');
+    log(c.bold + c.cyan, '═══════════════════════════════════════════════════════════════');
     console.log('');
-    log(c.cyan, `   📁 Résultat: ${consumeResult.resultLocation}`);
-    
-    // Récupérer le hash du résultat
-    const consumeData = await fetchResult(consumeResult.resultLocation);
-    if (consumeData) {
-      consumeAppHash = consumeData.hashes?.sha256;
-      log(c.green, `   🔢 Hash ConsumeApp: ${consumeAppHash}`);
+
+    const secretName = `app-secret-test-${Date.now()}`;
+    log(c.cyan, `📋 Secret Name (Meta): ${secretName}`);
+    console.log('');
+
+    // Initialize iExec
+    log(c.yellow, '🔧 Initializing wallet...');
+
+    const ethProvider = utils.getSignerFromPrivateKey(CONFIG.rpcUrl, CONFIG.privateKey);
+    const iexec = new IExec(
+        { ethProvider: ethProvider },
+        {
+            chainId: CONFIG.chainId,
+            smsURL: CONFIG.smsUrl,
+            resultProxyURL: 'https://ipfs-upload.arbitrum-sepolia-testnet.iex.ec',
+            iexecGatewayURL: 'https://api-market.arbitrum-sepolia-testnet.iex.ec'
+        }
+    );
+
+    const address = await iexec.wallet.getAddress();
+    log(c.green, `   ✅ Wallet: ${address}`);
+    console.log('');
+
+    let targetAppHash, consumeAppHash;
+
+    // STEP 0: Setup Permissions
+    await setupTargetAppPermissions(iexec);
+    console.log('');
+
+    // STEP 1: TargetApp
+    try {
+        const targetResult = await executeTargetApp(iexec, CONFIG.consumeApp, secretName);
+        console.log('');
+        log(c.cyan, `   📁 Result: ${targetResult.resultLocation}`);
+
+        const targetData = await fetchResult(targetResult.resultLocation);
+        if (targetData) {
+            targetAppHash = targetData.secretInfo?.hash;
+            log(c.green, `   🔢 Hash TargetApp: ${targetAppHash}`);
+        }
+    } catch (error) {
+        log(c.red, `❌ Error TargetApp: ${error.message}`);
+        process.exit(1);
     }
-  } catch (error) {
-    log(c.red, `❌ Erreur ConsumeApp: ${error.message}`);
-    process.exit(1);
-  }
 
-  console.log('');
+    console.log('');
 
-  // ═══════════════════════════════════════════════════════════════
-  // ÉTAPE 3: Comparer les hash
-  // ═══════════════════════════════════════════════════════════════
-  log(c.bold + c.cyan, '═══════════════════════════════════════════════════════════════');
-  log(c.bold + c.cyan, '    🔍 VÉRIFICATION DES HASH');
-  log(c.bold + c.cyan, '═══════════════════════════════════════════════════════════════');
-  console.log('');
+    // STEP 2: ConsumeApp
+    try {
+        const consumeResult = await executeConsumeApp(iexec);
+        console.log('');
+        log(c.cyan, `   📁 Result: ${consumeResult.resultLocation}`);
 
-  log(c.yellow, `   Hash TargetApp:   ${targetAppHash || 'N/A'}`);
-  log(c.yellow, `   Hash ConsumeApp:  ${consumeAppHash || 'N/A'}`);
-  console.log('');
+        const consumeData = await fetchResult(consumeResult.resultLocation);
+        if (consumeData) {
+            consumeAppHash = consumeData.hashes?.sha256;
+            if (consumeData.preview) {
+                log(c.yellow, `   👀 Preview ConsumeApp: ${consumeData.preview}`);
+            }
+            log(c.green, `   🔢 Hash ConsumeApp: ${consumeAppHash}`);
+        }
+    } catch (error) {
+        log(c.red, `❌ Error ConsumeApp: ${error.message}`);
+        process.exit(1);
+    }
 
-  if (targetAppHash && consumeAppHash && targetAppHash === consumeAppHash) {
-    log(c.bold + c.green, '   ✅ LES HASH CORRESPONDENT !');
-    log(c.green, '   ════════════════════════════════════════════════════════');
-    log(c.green, '   ✓ Le secret a été transmis correctement');
-    log(c.green, '   ✓ Personne n\'a vu la valeur du secret');
-    log(c.green, '   ✓ Les deux iApps ont traité le même secret');
-    log(c.green, '   ════════════════════════════════════════════════════════');
-  } else {
-    log(c.bold + c.red, '   ❌ LES HASH NE CORRESPONDENT PAS !');
-    log(c.red, '   Quelque chose s\'est mal passé dans le flux.');
-  }
+    console.log('');
 
-  console.log('');
-  log(c.bold + c.cyan, '═══════════════════════════════════════════════════════════════');
-  log(c.bold + c.cyan, '    🎉 TEST TERMINÉ');
-  log(c.bold + c.cyan, '═══════════════════════════════════════════════════════════════');
-  console.log('');
+    // STEP 3: Comparison
+    log(c.bold + c.cyan, '═══════════════════════════════════════════════════════════════');
+    log(c.bold + c.cyan, '    🔍 HASH VERIFICATION');
+    log(c.bold + c.cyan, '═══════════════════════════════════════════════════════════════');
+    console.log('');
+
+    log(c.yellow, `   Hash TargetApp:   ${targetAppHash || 'N/A'}`);
+    log(c.yellow, `   Hash ConsumeApp:  ${consumeAppHash || 'N/A'}`);
+    console.log('');
+
+    if (targetAppHash && consumeAppHash && targetAppHash === consumeAppHash) {
+        log(c.bold + c.green, '   ✅ HASHES MATCH!');
+        log(c.green, '   ════════════════════════════════════════════════════════');
+        log(c.green, '   ✓ The secret was transmitted correctly');
+        log(c.green, '   ✓ The flow is working!');
+        log(c.green, '   ════════════════════════════════════════════════════════');
+    } else {
+        log(c.bold + c.red, '   ❌ HASHES DO NOT MATCH!');
+    }
 }
 
 main().catch(err => {
-  console.error(c.red, '❌ Erreur fatale:', err.message, c.reset);
-  console.error(err);
-  process.exit(1);
+    console.error(c.red, '❌ Fatal Error:', err.message, c.reset);
+    console.error(err);
+    process.exit(1);
 });

@@ -1,5 +1,29 @@
 [
   {
+    "image": "raorla/consumeapp:2.0.0-tee-scone-5.9.1-v16-prod-e11842306fcd",
+    "app": "0x84074f9728Eaa73148Ad54341B73859B5e54eD13",
+    "owner": "0x0400a9d48E908739945D531445CBaD89D32Ce6f2",
+    "date": "2026-01-13T10:43:20.461Z"
+  },
+  {
+    "image": "raorla/consumeapp:1.2.2-tee-scone-5.9.1-v16-prod-449824762668",
+    "app": "0xA3845A66B1F4039c1030cf8A5Ef4551836a70138",
+    "owner": "0x0400a9d48E908739945D531445CBaD89D32Ce6f2",
+    "date": "2026-01-13T10:21:15.804Z"
+  },
+  {
+    "image": "raorla/consumeapp:1.2.0-tee-scone-5.9.1-v16-prod-dde1bceb4bbd",
+    "app": "0x2503e3599a155Ce36379740b6FFa46Ed8f62B644",
+    "owner": "0x0400a9d48E908739945D531445CBaD89D32Ce6f2",
+    "date": "2026-01-13T10:05:23.787Z"
+  },
+  {
+    "image": "raorla/consumeapp:1.0.1-tee-scone-5.9.1-v16-prod-767bae6ebf27",
+    "app": "0x97405Dc1AF0b3177eDF569B9680C07f74c79Dc53",
+    "owner": "0x0400a9d48E908739945D531445CBaD89D32Ce6f2",
+    "date": "2026-01-13T09:40:16.793Z"
+  },
+  {
     "image": "raorla/consumeapp:0.0.1-tee-scone-5.9.1-v16-prod-8f4398a5a38f",
     "app": "0x20c81761Bf9d84F158F4A505F666c6C5474Ed37d",
     "owner": "0x0400a9d48E908739945D531445CBaD89D32Ce6f2",
