@@ -8,3 +8,4 @@ output/*
 cache/*
 !cache/.gitkeep
 .DS_Store
+.secret-lock.json

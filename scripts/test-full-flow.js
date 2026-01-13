@@ -282,10 +282,34 @@ async function fetchResult(location) {
     }
 }
 
+const LOCK_FILE = '.secret-lock.json';
+const fs = await import('fs');
+
+// Helper to manage lock state
+function getLockState() {
+    if (fs.existsSync(LOCK_FILE)) {
+        try {
+            const data = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8'));
+            if (data.appAddress === CONFIG.consumeApp) {
+                return data;
+            }
+        } catch (e) { /* ignore corruption */ }
+    }
+    return null;
+}
+
+function saveLockState(hash) {
+    fs.writeFileSync(LOCK_FILE, JSON.stringify({
+        appAddress: CONFIG.consumeApp,
+        secretHash: hash,
+        timestamp: new Date().toISOString()
+    }, null, 2));
+}
+
 async function main() {
     console.log('');
     log(c.bold + c.cyan, '═══════════════════════════════════════════════════════════════');
-    log(c.bold + c.cyan, '    🚀 APP SECRET FLOW TEST - SINGLE WALLET');
+    log(c.bold + c.cyan, '    🚀 APP SECRET FLOW TEST - STATEFUL VERIFICATION');
     log(c.bold + c.cyan, '═══════════════════════════════════════════════════════════════');
     console.log('');
 
@@ -307,33 +331,54 @@ async function main() {
         }
     );
 
-    const address = await iexec.wallet.getAddress();
-    log(c.green, `   ✅ Wallet: ${address}`);
+    const walletAddress = await iexec.wallet.getAddress();
+    log(c.green, `   ✅ Wallet: ${walletAddress}`);
     console.log('');
 
     let targetAppHash, consumeAppHash;
+    let existingState = getLockState();
 
-    // STEP 0: Setup Permissions
+    // STEP 0: Permissions
     await setupTargetAppPermissions(iexec);
     console.log('');
 
-    // STEP 1: TargetApp
-    try {
-        const targetResult = await executeTargetApp(iexec, CONFIG.consumeApp, secretName);
+    if (existingState && existingState.secretHash) {
+        log(c.bold + c.blue, '═══════════════════════════════════════════════════════════════');
+        log(c.bold + c.blue, '     ℹ️  EXISTING SECRET DETECTED (Skipping Provisioning)');
+        log(c.bold + c.blue, '═══════════════════════════════════════════════════════════════');
+        log(c.blue, `    🔐 Known Secret Hash: ${existingState.secretHash}`);
+        log(c.blue, `    🔄 Reuse existing secret (Run #${existingState.runCount ? existingState.runCount + 1 : 'N/A'})`);
+        targetAppHash = existingState.secretHash;
         console.log('');
-        log(c.cyan, `   📁 Result: ${targetResult.resultLocation}`);
+    } else {
+        // STEP 1: TargetApp
+        try {
+            const targetResult = await executeTargetApp(iexec, CONFIG.consumeApp, secretName);
+            console.log('');
+            log(c.cyan, `   📁 Result: ${targetResult.resultLocation}`);
 
-        const targetData = await fetchResult(targetResult.resultLocation);
-        if (targetData) {
-            targetAppHash = targetData.secretInfo?.hash;
-            log(c.green, `   🔢 Hash TargetApp: ${targetAppHash}`);
+            const targetData = await fetchResult(targetResult.resultLocation);
+            if (targetData) {
+                targetAppHash = targetData.secretInfo?.hash;
+
+                // Fallback for TargetApp if not explicit:
+                if (!targetAppHash && targetData.generatedSecret && targetData.generatedSecret.sha256) {
+                    targetAppHash = targetData.generatedSecret.sha256;
+                }
+
+                log(c.green, `   🔢 Hash TargetApp: ${targetAppHash}`);
+
+                if (targetAppHash) {
+                    saveLockState(targetAppHash);
+                    log(c.green, '   💾 Secret Hash Saved to .secret-lock.json for future runs');
+                }
+            }
+        } catch (error) {
+            log(c.red, `❌ Error TargetApp: ${error.message}`);
+            process.exit(1);
         }
-    } catch (error) {
-        log(c.red, `❌ Error TargetApp: ${error.message}`);
-        process.exit(1);
+        console.log('');
     }
-
-    console.log('');
 
     // STEP 2: ConsumeApp
     try {
@@ -362,18 +407,25 @@ async function main() {
     log(c.bold + c.cyan, '═══════════════════════════════════════════════════════════════');
     console.log('');
 
-    log(c.yellow, `   Hash TargetApp:   ${targetAppHash || 'N/A'}`);
-    log(c.yellow, `   Hash ConsumeApp:  ${consumeAppHash || 'N/A'}`);
+    log(c.yellow, `   Expected Hash (Provisioned): ${targetAppHash || 'Unknown'}`);
+    log(c.yellow, `   Actual Hash (ConsumeApp):    ${consumeAppHash || 'N/A'}`);
     console.log('');
 
     if (targetAppHash && consumeAppHash && targetAppHash === consumeAppHash) {
         log(c.bold + c.green, '   ✅ HASHES MATCH!');
         log(c.green, '   ════════════════════════════════════════════════════════');
-        log(c.green, '   ✓ The secret was transmitted correctly');
-        log(c.green, '   ✓ The flow is working!');
+        if (existingState) {
+            log(c.green, '   ✓ Confirmed: ConsumeApp is still using the ORIGINAL secret.');
+            log(c.green, '   ✓ Persistent verification successful.');
+        } else {
+            log(c.green, '   ✓ Initial provisioning successful.');
+        }
         log(c.green, '   ════════════════════════════════════════════════════════');
     } else {
-        log(c.bold + c.red, '   ❌ HASHES DO NOT MATCH!');
+        log(c.bold + c.red, '   ❌ HASH MISMATCH');
+        if (!targetAppHash) {
+            log(c.red, '   (Missing target hash to compare against)');
+        }
     }
 }
 

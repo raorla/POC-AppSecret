@@ -1,5 +1,11 @@
 [
   {
+    "image": "raorla/consumeapp:2.2.0-tee-scone-5.9.1-v16-prod-b64a6f4270e5",
+    "app": "0xD91d32d2D54D6de2d308b0a2F60d6BF97E9341B3",
+    "owner": "0x0400a9d48E908739945D531445CBaD89D32Ce6f2",
+    "date": "2026-01-13T12:20:13.655Z"
+  },
+  {
     "image": "raorla/consumeapp:2.1.0-tee-scone-5.9.1-v16-prod-9c25c907cc09",
     "app": "0x70Da57974A0A6C42d27e7a3E42064dBf18d11735",
     "owner": "0x0400a9d48E908739945D531445CBaD89D32Ce6f2",
