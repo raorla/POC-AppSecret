@@ -85,7 +85,7 @@ if (APP_SECRET) {
 }
 ```
 
-## 🔧 Current Addresses 
+## 🔧 Current Addresses (as of 2026-01-13)
 
 *   **TargetApp**: `0x2e89861c100F5070826CE18727F5e15c854ec204`
 *   **ConsumeApp**: `0xA3845A66B1F4039c1030cf8A5Ef4551836a70138`
