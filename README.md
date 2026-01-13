@@ -85,10 +85,10 @@ if (APP_SECRET) {
 }
 ```
 
-## 🔧 Current Addresses (as of 2026-01-13)
+## 🔧 Current Addresses 
 
-*   **TargetApp**: `0x2e89861c100F5070826CE18727F5e15c854ec204`
-*   **ConsumeApp**: `0xA3845A66B1F4039c1030cf8A5Ef4551836a70138`
+*   **TargetApp**: `0x`
+*   **ConsumeApp**: `0x`
 *   **Network**: Arbitrum Sepolia Testnet
 
 ## ⚠️ Security Notes
